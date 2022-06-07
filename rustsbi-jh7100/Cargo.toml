@@ -1,0 +1,18 @@
+[package]
+name = "rustsbi-jh7100"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+riscv = "0.7"
+rustsbi = "0.2.2"
+buddy_system_allocator = "0.8"
+embedded-hal = "0.2.6"
+nb = "1"
+r0 = "1"
+bit_field = "0.10"
+serde-device-tree = { version = "0.0.1", default-features = false, features = ["alloc"] }
+serde_derive = "1.0"
+serde = { version = "1.0", default-features = false, features = ["alloc"] }

@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "rustsbi-hifive-unmatched",
+    "rustsbi-jh7100",
     "test-kernel",
     "xtask"
 ]

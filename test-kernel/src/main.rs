@@ -31,26 +31,16 @@ pub extern "C" fn rust_main(hartid: usize, dtb_pa: usize) -> ! {
         unsafe { core::arch::asm!("csrw mcycle, x0") }; // mcycle cannot be written, this is always a 4-byte illegal instruction
     }
     if hartid == 0 {
-        let sbi_ret = sbi::hart_stop(3);
-        println!(">> Stop hart 3, return value {:?}", sbi_ret);
-        for i in 0..4 {
+        for i in 0..2 {
             let sbi_ret = sbi::hart_get_status(i);
             println!(">> Hart {} state return value: {:?}", i, sbi_ret);
         }
-    } else if hartid == 1 {
+    } else {
         let sbi_ret = sbi::hart_suspend(0x00000000, 0, 0);
         println!(
             ">> Start test for hart {}, retentive suspend return value {:?}",
             hartid, sbi_ret
         );
-    } else if hartid == 2 {
-        /* resume_addr should be physical address, and here pa == va */
-        let sbi_ret = sbi::hart_suspend(0x80000000, hart_2_resume as usize, 0x4567890a);
-        println!(">> Error for non-retentive suspend: {:?}", sbi_ret);
-        loop {}
-    } else {
-        // hartid == 3
-        loop {}
     }
     if hartid == 0 {
         println!(
@@ -61,12 +51,6 @@ pub extern "C" fn rust_main(hartid: usize, dtb_pa: usize) -> ! {
         let sbi_ret = sbi::send_ipi(&bv as *const _ as usize, hartid); // wake hartid + 1
         println!(">> Wake hart 1, sbi return value {:?}", sbi_ret);
         loop {} // wait for machine shutdown
-    } else if hartid == 1 {
-        // send software IPI to activate hart 2
-        let bv: usize = 0b10;
-        let sbi_ret = sbi::send_ipi(&bv as *const _ as usize, hartid); // wake hartid + 1
-        println!(">> Wake hart 2, sbi return value {:?}", sbi_ret);
-        loop {}
     } else {
         // hartid == 2 || hartid == 3
         unreachable!()
@@ -162,28 +146,30 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
-const BOOT_STACK_SIZE: usize = 0x10000 * 5;
 
+const PER_HART_STACK_SIZE: usize = 0x10000;
+const BOOT_STACK_SIZE: usize = PER_HART_STACK_SIZE * 2;
 static mut BOOT_STACK: [u8; BOOT_STACK_SIZE] = [0; BOOT_STACK_SIZE];
 
 #[naked]
 #[link_section = ".text.entry"]
 #[export_name = "_start"]
 unsafe extern "C" fn entry() -> ! {
-    core::arch::asm!("
-    # 1. set sp
-    # sp = bootstack + (hartid + 1) * 0x10000
-    add     t0, a0, 1
-    slli    t0, t0, 14
-1:  auipc   sp, %pcrel_hi({boot_stack})
-    addi    sp, sp, %pcrel_lo(1b)
-    add     sp, sp, t0
-    # 2. jump to rust_main (absolute address)
-1:  auipc   t0, %pcrel_hi({rust_main})
-    addi    t0, t0, %pcrel_lo(1b)
-    jr      t0
-    ", 
+    core::arch::asm!(
+    // 1. set sp
+    // sp = bootstack + (hartid + 1) * HART_STACK_SIZE
+    "
+    la      sp, {boot_stack}
+    li      t0, {per_hart_stack_size}
+    addi    t1, a0, 1
+1:  add     sp, sp, t0
+    addi    t1, t1, -1
+    bnez    t1, 1b
+    ",
+    // 2. jump to rust_main (absolute address)
+    "j      {rust_main}", 
     boot_stack = sym BOOT_STACK,
+    per_hart_stack_size = const PER_HART_STACK_SIZE,
     rust_main = sym rust_main,
     options(noreturn))
 }

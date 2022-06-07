@@ -4,6 +4,7 @@ use riscv::register::{
     mtval,
     mtvec::{self, TrapMode},
 };
+use rustsbi::println;
 
 #[inline]
 pub fn init(hart_id: usize) {
@@ -18,7 +19,7 @@ pub fn init(hart_id: usize) {
 }
 
 extern "C" fn rust_fail(ctx: &SupervisorContext) -> ! {
-    crate::console::eprintln!(
+    println!(
         "rustsbi: early init stage fail, context: {:x?}, mcause: {:?}, mtval: {:x}",
         ctx,
         mcause::read().cause(),

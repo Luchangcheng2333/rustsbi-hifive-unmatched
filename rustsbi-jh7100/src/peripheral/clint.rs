@@ -1,6 +1,6 @@
 #[derive(Clone, Copy)]
 pub struct Clint {
-    base: *mut u8,
+    base: *mut u32,
 }
 
 unsafe impl Send for Clint {}
@@ -8,7 +8,7 @@ unsafe impl Sync for Clint {}
 
 #[allow(unused)]
 impl Clint {
-    pub fn new(base: *mut u8) -> Clint {
+    pub fn new(base: *mut u32) -> Clint {
         Clint { base }
     }
 
@@ -37,7 +37,7 @@ impl Clint {
 
 impl rustsbi::Ipi for Clint {
     fn max_hart_id(&self) -> usize {
-        4
+        1
     }
 
     fn send_ipi_many(&self, hart_mask: rustsbi::HartMask) -> rustsbi::SbiRet {

@@ -79,9 +79,7 @@ fn main() {
         if matches.value_of("PAYLOAD") == Some("test-kernel") {
             xtask_build_test_kernel(&xtask_env);
             xtask_binary_test_kernel(&xtask_env);
-            xtask_sd_image_test_kernel(&xtask_env);
-        } else {
-            xtask_sd_image(&xtask_env);
+            xtask_image(&xtask_env);
         }
     } else if let Some(_matches) = matches.subcommand_matches("gdb") {
         eprintln!("xtask gdb: mode: {:?}", xtask_env.compile_mode);
@@ -96,7 +94,7 @@ fn main() {
 fn xtask_build_sbi(xtask_env: &XtaskEnv) {
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let mut command = Command::new(cargo);
-    command.current_dir(project_root().join("rustsbi-hifive-unmatched"));
+    command.current_dir(project_root().join("rustsbi-jh7100"));
     command.arg("build");
     match xtask_env.compile_mode {
         CompileMode::Debug => {}
@@ -104,7 +102,7 @@ fn xtask_build_sbi(xtask_env: &XtaskEnv) {
             command.arg("--release");
         }
     }
-    command.args(&["--package", "rustsbi-hifive-unmatched"]);
+    command.args(&["--package", "rustsbi-jh7100"]);
     command.args(&["--target", DEFAULT_TARGET]);
     let status = command.status().unwrap();
     if !status.success() {
@@ -117,10 +115,10 @@ fn xtask_binary_sbi(xtask_env: &XtaskEnv) {
     let objcopy = "rust-objcopy";
     let status = Command::new(objcopy)
         .current_dir(dist_dir(xtask_env))
-        .arg("rustsbi-hifive-unmatched")
+        .arg("rustsbi-jh7100")
         .arg("--binary-architecture=riscv64")
         .arg("--strip-all")
-        .args(&["-O", "binary", "rustsbi-hifive-unmatched.bin"])
+        .args(&["-O", "binary", "rustsbi-jh7100.bin"])
         .status()
         .unwrap();
 
@@ -136,7 +134,7 @@ fn xtask_asm_sbi(xtask_env: &XtaskEnv) {
         .current_dir(dist_dir(xtask_env))
         .arg("--disassemble")
         .arg("--demangle")
-        .arg("rustsbi-hifive-unmatched")
+        .arg("rustsbi-jh7100")
         .status()
         .unwrap();
 }
@@ -144,7 +142,7 @@ fn xtask_asm_sbi(xtask_env: &XtaskEnv) {
 fn xtask_unmatched_gdb(xtask_env: &XtaskEnv) {
     let mut command = Command::new("riscv-none-embed-gdb");
     command.current_dir(dist_dir(xtask_env));
-    command.args(&["--eval-command", "file rustsbi-hifive-unmatched"]);
+    command.args(&["--eval-command", "file rustsbi-jh7100"]);
     command.args(&["--eval-command", "target extended-remote localhost:3333"]);
     command.arg("--quiet");
 
@@ -161,16 +159,31 @@ fn xtask_unmatched_gdb(xtask_env: &XtaskEnv) {
     }
 }
 
-fn xtask_sd_image(xtask_env: &XtaskEnv) {
-    let status = find_mkimage()
-        .expect("find mkimage tool")
-        .current_dir(project_root())
-        .arg("-f")
-        .arg(&format!("sd-image-{}.its", xtask_env.compile_mode))
-        .arg("target/sd-card-partition-2.img")
-        .status()
-        .expect("create sd card image");
+fn xtask_image(xtask_env: &XtaskEnv) {
+    let path_buf = project_root().join("target/riscv64imac-unknown-none-elf/");
+    let path_buf = match xtask_env.compile_mode {
+        CompileMode::Debug => path_buf.join("debug"),
+        CompileMode::Release => path_buf.join("release"),
+    };
 
+    let mut command = Command::new("cp");
+    command.current_dir(&path_buf);
+    command.arg("rustsbi-jh7100.bin");
+    command.arg("test-kernel.image");
+    let status = command.status().expect("xtask_image cp");
+    if !status.success() {
+        eprintln!("mkimage cp failed with status {}", status);
+        process::exit(status.code().unwrap_or(1));
+    }
+
+    let mut command = Command::new("dd");
+    command.current_dir(&path_buf);
+    command.arg("if=test-kernel.bin");
+    command.arg("of=test-kernel.image");
+    command.arg("bs=128k");
+    command.arg("seek=1");
+    
+    let status = command.status().expect("xtask_image");
     if !status.success() {
         eprintln!("mkimage failed with status {}", status);
         process::exit(status.code().unwrap_or(1));
@@ -214,25 +227,6 @@ fn xtask_binary_test_kernel(xtask_env: &XtaskEnv) {
     }
 }
 
-fn xtask_sd_image_test_kernel(xtask_env: &XtaskEnv) {
-    let status = find_mkimage()
-        .expect("find mkimage tool")
-        .current_dir(project_root())
-        .arg("-f")
-        .arg(&format!(
-            "test-kernel/sd-image-{}.its",
-            xtask_env.compile_mode
-        ))
-        .arg("target/rustsbi-with-test-kernel.img")
-        .status()
-        .expect("create sd card image");
-
-    if !status.success() {
-        eprintln!("mkimage failed with status {}", status);
-        process::exit(status.code().unwrap_or(1));
-    }
-}
-
 fn dist_dir(xtask_env: &XtaskEnv) -> PathBuf {
     let mut path_buf = project_root().join("target").join(DEFAULT_TARGET);
     path_buf = match xtask_env.compile_mode {
@@ -248,21 +242,4 @@ fn project_root() -> PathBuf {
         .nth(1)
         .unwrap()
         .to_path_buf()
-}
-
-fn find_mkimage() -> std::io::Result<Command> {
-    let mkimage = Command::new("mkimage").arg("-V").status();
-    if mkimage.is_ok() {
-        return Ok(Command::new("mkimage"));
-    }
-    #[cfg(windows)]
-    {
-        let wsl_mkimage = Command::new("wsl").arg("mkimage").arg("-V").status();
-        if wsl_mkimage.is_ok() {
-            let mut cmd = Command::new("wsl");
-            cmd.arg("mkimage");
-            return Ok(cmd);
-        }
-    }
-    return Err(mkimage.unwrap_err());
 }

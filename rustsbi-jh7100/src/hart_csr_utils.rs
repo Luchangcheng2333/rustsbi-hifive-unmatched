@@ -1,4 +1,3 @@
-use crate::console::println;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -7,6 +6,7 @@ use riscv::register::{
     medeleg, mideleg,
     misa::{self, MXL},
 };
+use rustsbi::println;
 
 pub fn print_hart0_csrs() {
     print_misa();
