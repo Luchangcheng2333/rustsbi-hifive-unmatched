@@ -8,13 +8,7 @@ use riscv::register::{
 };
 use rustsbi::println;
 
-pub fn print_hart0_csrs() {
-    print_misa();
-    // 第0个核没有S态，不能委托中断
-    print_pmp();
-}
-
-pub fn print_hartn_csrs() {
+pub fn print_hart_csrs() {
     print_misa();
     print_mideleg();
     print_medeleg();
@@ -126,7 +120,7 @@ fn print_medeleg() {
 #[cfg(target_pointer_width = "64")]
 #[inline]
 fn print_pmp() {
-    let pmps = unsafe { pmps::<16>() };
+    let pmps = unsafe { pmps::<8>() };
     for (i, (pmpicfg, pmpiaddr)) in pmps.iter().enumerate() {
         let pmpicfg = PmpCfg::from(*pmpicfg);
         let range = match pmpicfg.a() {
@@ -203,7 +197,7 @@ enum AddressMatching {
     Napot,
 }
 
-// 1.12中，L=64；1.11中，L=16。
+// 1.12中，L=64；1.11中，L=16；1.10中，L=8。
 // 0..16 => pmpcfg[0, 2]
 // 0..64 => pmpcfg[0, 2, 4, 6, .., 14]
 #[inline]

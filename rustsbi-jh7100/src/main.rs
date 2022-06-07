@@ -4,6 +4,7 @@
 #![feature(generator_trait)]
 #![feature(default_alloc_error_handler)]
 #![feature(ptr_metadata)]
+#![allow(dead_code)]
 
 extern crate alloc;
 
@@ -33,6 +34,7 @@ extern "C" fn rust_main(hart_id: usize) {
     let clint = peripheral::Clint::new(0x2000000 as *mut u32);
     
     early_trap::init(hart_id);
+    
     if hart_id == 0 {
         init_bss();
         init_heap(); // 必须先加载堆内存，才能使用rustsbi框架
@@ -49,27 +51,76 @@ extern "C" fn rust_main(hart_id: usize) {
             println!("[rustsbi] warning: choose from device tree error, {}", e);
         }
         println!(
-            "[rustsbi] enter supervisor 0x8002_0000, opaque register {:#x}",
+            "[rustsbi] enter supervisor 0x80020000, opaque register {:#x}",
             opaque
         );
-        hart_csr_utils::print_hart0_csrs();
-        for target_hart_id in 0..2 {
-            if target_hart_id != 0 {
-                // clint.send_soft(target_hart_id);
-            }
-        }
+        // clint.send_soft(1);
     } else {
         pause(clint);
         // 不是初始化核，先暂停
-        if hart_id == 1 {
-            hart_csr_utils::print_hartn_csrs();
-        }
-        
     }
+
+    // TODO: jump to a confuse address and print pmp panic if set pmp
+    // set_pmp();
     delegate_interrupt_exception();
+    hart_csr_utils::print_hart_csrs();
+
     runtime::init();
+    // TODO: Instruction Fault when run at 0x8002_0000
     execute::execute_supervisor(0x8002_0000, riscv::register::mhartid::read(), opaque);
 }
+
+fn set_pmp() {
+    // todo: 根据QEMU的loader device等等，设置这里的权限配置
+    // read fdt tree value, parse, and calculate proper pmp configuration for this device tree (issue #7)
+    // integrate with `count_harts`
+    //
+    // Qemu MMIO config ref: https://github.com/qemu/qemu/blob/master/hw/riscv/virt.c#L46
+    //
+    // About PMP:
+    //
+    // CSR: pmpcfg0(0x3A0)~pmpcfg15(0x3AF); pmpaddr0(0x3B0)~pmpaddr63(0x3EF)
+    // pmpcfg packs pmp entries each of which is of 8-bit
+    // on RV64 only even pmpcfg CSRs(0,2,...,14) are available, each of which contains 8 PMP
+    // entries
+    // every pmp entry and its corresponding pmpaddr describe a pmp region
+    //
+    // layout of PMP entries:
+    // ------------------------------------------------------
+    //  7   |   [5:6]   |   [3:4]   |   2   |   1   |   0   |
+    //  L   |   0(WARL) |   A       |   X   |   W   |   R   |
+    // ------------------------------------------------------
+    // A = OFF(0), disabled;
+    // A = TOR(top of range, 1), match address y so that pmpaddr_{i-1}<=y<pmpaddr_i irrespective of
+    // the value pmp entry i-1
+    // A = NA4(naturally aligned 4-byte region, 2), only support a 4-byte pmp region
+    // A = NAPOT(naturally aligned power-of-two region, 3), support a >=8-byte pmp region
+    // When using NAPOT to match a address range [S,S+L), then the pmpaddr_i should be set to (S>>2)|((L>>2)-1)
+    let calc_pmpaddr = |start_addr: usize, length: usize| (start_addr >> 2) | ((length >> 2) - 1);
+    let mut pmpcfg0: usize = 0;
+    // pmp region 0: RW, A=NAPOT, address range {0x1000_0000, 0x800_0000}, peripherals CSR
+    pmpcfg0 |= 0b11011;
+    let pmpaddr0 = calc_pmpaddr(0x1000_0000, 0x800_0000);
+    // pmp region 1: RW, A=NAPOT, address range {0x200_0000, 0x1_0000}, CLINT
+    pmpcfg0 |= 0b11011 << 8;
+    let pmpaddr1 = calc_pmpaddr(0x200_0000, 0x1_0000);
+    // pmp region 2: RWX, A=NAPOT, address range {0x8000_0000, 0x2_0000_0000}, DRAM
+    pmpcfg0 |= 0b11111 << 16;
+    let pmpaddr2 = calc_pmpaddr(0x8000_0000, 0x2_0000_0000);
+    unsafe {
+        core::arch::asm!("csrw  pmpcfg0, {}",
+             "csrw  pmpaddr0, {}",
+             "csrw  pmpaddr1, {}",
+             "csrw  pmpaddr2, {}",
+             "sfence.vma",
+             in(reg) pmpcfg0,
+             in(reg) pmpaddr0,
+             in(reg) pmpaddr1,
+             in(reg) pmpaddr2,
+        );
+    }
+}
+
 
 fn init_bss() {
     extern "C" {
