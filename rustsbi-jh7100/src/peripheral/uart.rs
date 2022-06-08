@@ -4,7 +4,9 @@ use embedded_hal::serial::{Read, Write};
 
 // UART that is initialized by prior steps of bootloading
 #[derive(Clone, Copy)]
-pub struct Uart;
+pub struct Uart {
+    pre_byte: u8,
+}
 
 // UART外设是可以跨上下文共享的
 unsafe impl Send for Uart {}
@@ -14,7 +16,9 @@ impl Uart {
     #[inline]
     pub unsafe fn preloaded_uart0() -> Self {
         // Uart is inited at DDRinit
-        Self {}
+        Self {
+            pre_byte: 0
+        }
     }
 }
 
@@ -38,7 +42,11 @@ impl Write<u8> for Uart {
 
     #[inline]
     fn write(&mut self, byte: u8) -> nb::Result<(), Infallible> {
+        if byte == '\n' as u8 && self.pre_byte != '\r' as u8 {
+            serial_out(REG_THR, '\r' as u32);
+        }
         serial_out(REG_THR, byte as u32);
+        self.pre_byte = byte;
         Ok(())
     }
 
