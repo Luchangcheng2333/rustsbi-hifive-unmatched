@@ -18,6 +18,19 @@ mod runtime;
 
 use core::panic::PanicInfo;
 use rustsbi::println;
+use buddy_system_allocator::LockedHeap;
+
+#[global_allocator]
+static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
+
+const SBI_HEAP_SIZE: usize = 64 * 1024; // 64KiB
+#[link_section = ".bss.uninit"]
+static mut HEAP_SPACE: [u8; SBI_HEAP_SIZE] = [0; SBI_HEAP_SIZE];
+
+const PER_HART_STACK_SIZE: usize = 4 * 4096; // 16KiB
+const SBI_STACK_SIZE: usize = 2 * PER_HART_STACK_SIZE; // 2 harts
+#[link_section = ".bss.uninit"]
+static mut SBI_STACK: [u8; SBI_STACK_SIZE] = [0; SBI_STACK_SIZE];
 
 #[panic_handler]
 fn on_panic(info: &PanicInfo) -> ! {
@@ -27,11 +40,12 @@ fn on_panic(info: &PanicInfo) -> ! {
 }
 
 static DEVICE_TREE: &'static [u8] = include_bytes!("jh7100-starfive-visionfive-v1.dtb");
+static KERNEL: &'static [u8] = include_bytes!("test-kernel.bin");
 
 extern "C" fn rust_main(hart_id: usize) {
     let opaque = DEVICE_TREE.as_ptr() as usize;
     let uart = unsafe { peripheral::Uart::preloaded_uart0() };
-    let clint = peripheral::Clint::new(0x2000000 as *mut u32);
+    let clint = peripheral::Clint::new(0x2000000 as *mut u8);
     
     early_trap::init(hart_id);
     
@@ -39,7 +53,9 @@ extern "C" fn rust_main(hart_id: usize) {
         init_bss();
         init_heap(); // 必须先加载堆内存，才能使用rustsbi框架
         init_rustsbi_stdio(uart);
-        
+        unsafe {
+            core::ptr::copy(KERNEL.as_ptr(), 0x8020_0000 as *mut u8, KERNEL.len());
+        }
         println!("[rustsbi] RustSBI version {}", rustsbi::VERSION);
         println!("{}", rustsbi::LOGO);
         println!(
@@ -51,23 +67,26 @@ extern "C" fn rust_main(hart_id: usize) {
             println!("[rustsbi] warning: choose from device tree error, {}", e);
         }
         println!(
-            "[rustsbi] enter supervisor 0x80020000, opaque register {:#x}",
+            "[rustsbi] enter supervisor 0x80200000, opaque register {:#x}",
             opaque
         );
-        // clint.send_soft(1);
+        clint.send_soft(1);
     } else {
         pause(clint);
         // 不是初始化核，先暂停
     }
 
     // TODO: jump to a confuse address and print pmp panic if set pmp
-    // set_pmp();
+    set_pmp();
     delegate_interrupt_exception();
-    hart_csr_utils::print_hart_csrs();
+    if hart_id == 0 {
+        hart_csr_utils::print_hart_csrs();
+    }
 
     runtime::init();
-    // TODO: Instruction Fault when run at 0x8002_0000
-    execute::execute_supervisor(0x8002_0000, riscv::register::mhartid::read(), opaque);
+    
+    // TODO: Instruction Fault when run at 0x8020_0000
+    execute::execute_supervisor(0x8020_0000, hart_id, opaque);
 }
 
 fn set_pmp() {
@@ -192,15 +211,6 @@ pub fn pause(clint: peripheral::Clint) {
     }
 }
 
-const SBI_HEAP_SIZE: usize = 6 * 1024; // 8KiB
-#[link_section = ".bss.uninit"]
-static mut HEAP_SPACE: [u8; SBI_HEAP_SIZE] = [0; SBI_HEAP_SIZE];
-
-use buddy_system_allocator::LockedHeap;
-
-#[global_allocator]
-static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
-
 #[inline]
 fn init_heap() {
     unsafe {
@@ -209,11 +219,6 @@ fn init_heap() {
             .init(HEAP_SPACE.as_ptr() as usize, SBI_HEAP_SIZE);
     }
 }
-
-const PER_HART_STACK_SIZE: usize = 3 * 4096; // 8KiB
-const SBI_STACK_SIZE: usize = 2 * PER_HART_STACK_SIZE; // 2 harts
-#[link_section = ".bss.uninit"]
-static mut SBI_STACK: [u8; SBI_STACK_SIZE] = [0; SBI_STACK_SIZE];
 
 #[naked]
 #[link_section = ".text.entry"]

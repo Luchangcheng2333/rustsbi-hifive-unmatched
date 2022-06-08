@@ -12,7 +12,7 @@ pub fn print_hart_csrs() {
     print_misa();
     print_mideleg();
     print_medeleg();
-    print_pmp();
+    // print_pmp();
 }
 
 #[inline]

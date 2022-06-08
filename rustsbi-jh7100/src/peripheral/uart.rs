@@ -13,29 +13,7 @@ unsafe impl Sync for Uart {}
 impl Uart {
     #[inline]
     pub unsafe fn preloaded_uart0() -> Self {
-        let divisor = (UART_CLK / UART_BUADRATE_32MCLK_115200) >> 4;
-        let lcr_cache: u8 = serial_in(REG_LCR) as u8;
-        serial_out(REG_LCR, LCR_DLAB | lcr_cache as u32);
-	    serial_out(REG_BRDL,(divisor & 0xff) as u32);
-	    serial_out(REG_BRDH, ((divisor >> 8) & 0xff) as u32);
-	
-
-	    /* restore the DLAB to access the baud rate divisor registers */
-	    serial_out(REG_LCR, lcr_cache as u32);
-
-	    /* 8 data bits, 1 stop bit, no parity, clear DLAB */
-	    serial_out(REG_LCR, LCR_CS8 | LCR_1_STB | LCR_PDIS);
-	
-	    serial_out(REG_MDC, 0); /*disable flow control*/
-	
-	    /*
-	        * Program FIFO: enabled, mode 0 (set for compatibility with quark),
-	        * generate the interrupt at 8th byte
-	        * Clear TX and RX FIFO
-	    */
-	    serial_out(REG_FCR, FCR_FIFO | FCR_MODE1 | /*FCR_FIFO_1*/FCR_FIFO_8 | FCR_RCVRCLR | FCR_XMITCLR);
-	
-	    serial_out(REG_IER, 0);//dis the ser interrupt
+        // Uart is inited at DDRinit
         Self {}
     }
 }

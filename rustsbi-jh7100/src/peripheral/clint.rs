@@ -1,6 +1,6 @@
 #[derive(Clone, Copy)]
 pub struct Clint {
-    base: *mut u32,
+    base: *mut u8,
 }
 
 unsafe impl Send for Clint {}
@@ -8,7 +8,7 @@ unsafe impl Sync for Clint {}
 
 #[allow(unused)]
 impl Clint {
-    pub fn new(base: *mut u32) -> Clint {
+    pub fn new(base: *mut u8) -> Clint {
         Clint { base }
     }
 
