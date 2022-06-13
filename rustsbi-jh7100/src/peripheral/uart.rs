@@ -16,9 +16,7 @@ impl Uart {
     #[inline]
     pub unsafe fn preloaded_uart0() -> Self {
         // Uart is inited at DDRinit
-        Self {
-            pre_byte: 0
-        }
+        Self { pre_byte: 0 }
     }
 }
 
@@ -62,9 +60,7 @@ impl Write<u8> for Uart {
 
 fn serial_in(offset: u32) -> u32 {
     let offset = offset << 2 as u32;
-    unsafe {
-        read_volatile((UART_BASE + offset as usize) as *const u32)
-    }
+    unsafe { read_volatile((UART_BASE + offset as usize) as *const u32) }
 }
 
 fn serial_out(offset: u32, val: u32) {

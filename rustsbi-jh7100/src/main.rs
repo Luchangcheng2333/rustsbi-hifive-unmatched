@@ -13,15 +13,20 @@ mod early_trap;
 mod execute;
 mod feature;
 mod hart_csr_utils;
+mod hsm;
 mod peripheral;
 mod runtime;
 
+use buddy_system_allocator::LockedHeap;
 use core::panic::PanicInfo;
 use rustsbi::println;
-use buddy_system_allocator::LockedHeap;
 
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
+
+lazy_static::lazy_static! {
+    pub static ref HSM: hsm::U74Hsm = hsm::U74Hsm::new();
+}
 
 const SBI_HEAP_SIZE: usize = 64 * 1024; // 64KiB
 #[link_section = ".bss.uninit"]
@@ -40,15 +45,15 @@ fn on_panic(info: &PanicInfo) -> ! {
 }
 
 static DEVICE_TREE: &'static [u8] = include_bytes!("jh7100-starfive-visionfive-v1.dtb");
-static KERNEL: &'static [u8] = include_bytes!("test-kernel.bin");
+static KERNEL: &'static [u8] = include_bytes!("u-boot.bin");
 
 extern "C" fn rust_main(hart_id: usize) {
     let opaque = DEVICE_TREE.as_ptr() as usize;
     let uart = unsafe { peripheral::Uart::preloaded_uart0() };
     let clint = peripheral::Clint::new(0x2000000 as *mut u8);
-    
+
     early_trap::init(hart_id);
-    
+
     if hart_id == 0 {
         init_bss();
         init_heap(); // 必须先加载堆内存，才能使用rustsbi框架
@@ -70,23 +75,22 @@ extern "C" fn rust_main(hart_id: usize) {
             "[rustsbi] enter supervisor 0x80200000, opaque register {:#x}",
             opaque
         );
-        clint.send_soft(1);
+        rustsbi::init_hsm(HSM.clone());
     } else {
-        pause(clint);
-        // 不是初始化核，先暂停
+        hsm::pause();
     }
 
     // TODO: jump to a confuse address and print pmp panic if set pmp
     set_pmp();
     delegate_interrupt_exception();
+    runtime::init();
+
     if hart_id == 0 {
         hart_csr_utils::print_hart_csrs();
+        // clint.send_soft(1);
     }
 
-    runtime::init();
-    
-    // TODO: Instruction Fault when run at 0x8020_0000
-    execute::execute_supervisor(0x8020_0000, hart_id, opaque);
+    execute::execute_supervisor(0x8020_0000, hart_id, opaque, HSM.clone());
 }
 
 fn set_pmp() {
@@ -114,32 +118,65 @@ fn set_pmp() {
     // the value pmp entry i-1
     // A = NA4(naturally aligned 4-byte region, 2), only support a 4-byte pmp region
     // A = NAPOT(naturally aligned power-of-two region, 3), support a >=8-byte pmp region
-    // When using NAPOT to match a address range [S,S+L), then the pmpaddr_i should be set to (S>>2)|((L>>2)-1)
-    let calc_pmpaddr = |start_addr: usize, length: usize| (start_addr >> 2) | ((length >> 2) - 1);
+    // When using NAPOT to match a address range [S,S+L), then the pmpaddr_i should be set to (S>>2)|((L>>3)-1)
+    let calc_pmpaddr = |start_addr: usize, length: usize| (start_addr >> 2) | ((length >> 3) - 1);
     let mut pmpcfg0: usize = 0;
-    // pmp region 0: RW, A=NAPOT, address range {0x1000_0000, 0x800_0000}, peripherals CSR
+
+    // pmp region 0: RW, A=NAPOT, peripherals CSR
     pmpcfg0 |= 0b11011;
     let pmpaddr0 = calc_pmpaddr(0x1000_0000, 0x800_0000);
-    // pmp region 1: RW, A=NAPOT, address range {0x200_0000, 0x1_0000}, CLINT
+
+    // pmp region 1: RW, A=NAPOT, CLINT, Cache Controller, Reverse
     pmpcfg0 |= 0b11011 << 8;
-    let pmpaddr1 = calc_pmpaddr(0x200_0000, 0x1_0000);
-    // pmp region 2: RWX, A=NAPOT, address range {0x8000_0000, 0x2_0000_0000}, DRAM
+    let pmpaddr1 = calc_pmpaddr(0x200_0000, 0x200_0000);
+
+    // pmp region 2: RW, A=NAPOT, QSPI,
     pmpcfg0 |= 0b11111 << 16;
-    let pmpaddr2 = calc_pmpaddr(0x8000_0000, 0x2_0000_0000);
+    let pmpaddr2 = calc_pmpaddr(0x2000_0000, 0x2000_0000);
+
+    // pmp region 3: RWX, A=NAPOT, DRAM
+    pmpcfg0 |= 0b11111 << 24;
+    let pmpaddr3 = calc_pmpaddr(0x8000_0000, 0x8000_0000);
+
+    // pmp region 4: RWX, A=NAPOT, DRAM
+    pmpcfg0 |= 0b11111 << 32;
+    let pmpaddr4 = calc_pmpaddr(0x1_0000_0000, 0x1_0000_0000);
+
+    // pmp region 5: RWX, A=NAPOT, DRAM
+    pmpcfg0 |= 0b11111 << 40;
+    let pmpaddr5 = calc_pmpaddr(0x2_0000_0000, 0x8000_0000);
+
+    // pmp region 6: RWX, A=NAPOT, PLIC
+    pmpcfg0 |= 0b11111 << 48;
+    let pmpaddr6 = calc_pmpaddr(0xc00_0000, 0x400_0000);
+
+    // pmp region 7: RWX, A=NAPOT, Internal RAM + ROM + slv
+    pmpcfg0 |= 0b11111 << 56;
+    let pmpaddr7 = calc_pmpaddr(0x1800_0000, 0x800_0000);
+
     unsafe {
         core::arch::asm!("csrw  pmpcfg0, {}",
              "csrw  pmpaddr0, {}",
              "csrw  pmpaddr1, {}",
              "csrw  pmpaddr2, {}",
+             "csrw  pmpaddr3, {}",
+             "csrw  pmpaddr4, {}",
+             "csrw  pmpaddr5, {}",
+             "csrw  pmpaddr6, {}",
+             "csrw  pmpaddr7, {}",
              "sfence.vma",
              in(reg) pmpcfg0,
              in(reg) pmpaddr0,
              in(reg) pmpaddr1,
              in(reg) pmpaddr2,
+             in(reg) pmpaddr3,
+             in(reg) pmpaddr4,
+             in(reg) pmpaddr5,
+             in(reg) pmpaddr6,
+             in(reg) pmpaddr7,
         );
     }
 }
-
 
 fn init_bss() {
     extern "C" {
@@ -183,7 +220,7 @@ fn delegate_interrupt_exception() {
         medeleg::set_instruction_fault();
         medeleg::set_load_fault();
         medeleg::set_store_fault();
-        mie::set_mext();
+        // mie::set_mext();
         // 不打开mie::set_mtimer
         mie::set_msoft();
     }
